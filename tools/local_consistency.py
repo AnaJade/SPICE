@@ -54,6 +54,21 @@ num_cluster_dict = {'stl10': 10,
                     'cifar10': 10,
                     'cifar100': 100}
 
+mean, std = {}, {}
+mean['cifar10'] = [x / 255 for x in [125.3, 123.0, 113.9]]
+mean['cifar100'] = [x / 255 for x in [129.3, 124.1, 112.4]]
+mean['stl10'] = [0.485, 0.456, 0.406]
+mean['npy'] = [0.485, 0.456, 0.406]
+mean['npy224'] = [0.485, 0.456, 0.406]
+mean['oct'] = [149.888, 149.888, 149.888]
+
+std['cifar10'] = [x / 255 for x in [63.0, 62.1, 66.7]]
+std['cifar100'] = [x / 255 for x in [68.2,  65.4,  70.4]]
+std['stl10'] = [0.229, 0.224, 0.225]
+std['npy'] = [0.229, 0.224, 0.225]
+std['npy224'] = [0.229, 0.224, 0.225]
+std['oct'] = [11.766, 11.766, 11.766]
+
 # Set up the argument parser
 parser = argparse.ArgumentParser()
 parser.add_argument('--config_path',
@@ -62,30 +77,32 @@ parser.add_argument('--config_path',
 
 def main():
     args = parser.parse_args()
-
     if args.config_path is None:
-        if platform == "linux" or platform == "linux2":
-            args.config_path = pathlib.Path('../../config.yaml')
-        elif platform == "win32":
-            args.config_path = pathlib.Path('../../config_windows.yaml')
+        args.config_path = pathlib.Path('../../config.yaml')
     config_file = pathlib.Path(args.config_path)
+
     if not config_file.exists():
         print(f'Config file not found at {args.config_path}')
         raise SystemExit(1)
-    configs = utils.load_configs(config_file)
-    cfg = Dict()
 
-    ### Convert config file values to the args variable equivalent (match the format of the existing code)
-    print("Assigning config values to corresponding args variables...")
-    # Dataset
-    dataset_root = pathlib.Path(configs['data']['dataset_root'])
+    configs = utils.load_configs(config_file)
+    if platform == "linux" or platform == "linux2":
+        dataset_root = pathlib.Path(configs['data']['dataset_root_linux'])
+        dataset_path = pathlib.Path(configs['SPICE']['MoCo']['dataset_path_linux'])
+    elif platform == "win32":
+        dataset_root = pathlib.Path(configs['data']['dataset_root_windows'])
+        dataset_path = pathlib.Path(configs['SPICE']['MoCo']['dataset_path_windows'])
     ds_split = configs['data']['ds_split']
     labels = configs['data']['labels']
     ascan_per_group = configs['data']['ascan_per_group']
     use_mini_dataset = configs['data']['use_mini_dataset']
+    # oct_img_root = pathlib.Path(f'OCT_lab_data/{ascan_per_group}mscans')
     img_size_dict['oct'] = (512, ascan_per_group)
     num_cluster_dict['oct'] = len(labels)
 
+    ### Convert config file values to the args variable equivalent (match the format of the existing code)
+    print("Assigning config values to corresponding args variables...")
+    cfg = Dict()
     # Cfg file values
     cfg.model_name = configs['SPICE']['local_consistency']['model_name']
     moco_dataset_name = configs['SPICE']['MoCo']['dataset_name']
@@ -116,7 +133,7 @@ def main():
     # Data test
     cfg.data_test = Dict(dict(
         type=f'{moco_dataset_name}_emb', # "stl10_emb",
-        root_folder=pathlib.Path(configs['SPICE']['MoCo']['dataset_path']).joinpath(
+        root_folder=dataset_path.joinpath(
         'OCT_lab_data' if moco_dataset_name == 'oct' else moco_dataset_name), # "./datasets/stl10",
         embedding=None,
         split='train', # "train+test",
@@ -127,13 +144,13 @@ def main():
         show=False,
         trans1=Dict(dict(
             aug_type="test",
-            normalize=Dict(dict(mean=[0.485, 0.456, 0.406],
-                           std=[0.229, 0.224, 0.225])),
+            normalize=Dict(dict(mean=mean[moco_dataset_name],
+                           std=std[moco_dataset_name])),
         )),
         trans2=Dict(dict(
             aug_type="test",
-            normalize=Dict(dict(mean=[0.485, 0.456, 0.406],
-                           std=[0.229, 0.224, 0.225])),
+            normalize=Dict(dict(mean=mean[moco_dataset_name],
+                           std=std[moco_dataset_name])),
         )),
 
     ))

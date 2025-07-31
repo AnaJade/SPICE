@@ -26,14 +26,14 @@ mean['cifar100'] = [x / 255 for x in [129.3, 124.1, 112.4]]
 mean['stl10'] = [0.485, 0.456, 0.406]
 mean['npy'] = [0.485, 0.456, 0.406]
 mean['npy224'] = [0.485, 0.456, 0.406]
-mean['oct'] = [] # result of np.mean(data, (0, 1, 2))/255
+mean['oct'] = [149.88752895, 149.88752895, 149.88752895]
 
 std['cifar10'] = [x / 255 for x in [63.0, 62.1, 66.7]]
 std['cifar100'] = [x / 255 for x in [68.2,  65.4,  70.4]]
 std['stl10'] = [0.229, 0.224, 0.225]
 std['npy'] = [0.229, 0.224, 0.225]
 std['npy224'] = [0.229, 0.224, 0.225]
-std['oct'] = [] # result of np.std(data, (0, 1, 2))
+std['oct'] = [11.76577534, 11.76577534, 11.76577534]
 
 
 def get_transform(mean, std, dataset, train=True):

@@ -51,111 +51,54 @@ num_cluster_dict = {'stl10': 10,
                     'cifar10': 10,
                     'cifar100': 100}
 
+mean, std = {}, {}
+mean['cifar10'] = [x / 255 for x in [125.3, 123.0, 113.9]]
+mean['cifar100'] = [x / 255 for x in [129.3, 124.1, 112.4]]
+mean['stl10'] = [0.485, 0.456, 0.406]
+mean['npy'] = [0.485, 0.456, 0.406]
+mean['npy224'] = [0.485, 0.456, 0.406]
+mean['oct'] = [149.888, 149.888, 149.888]
+
+std['cifar10'] = [x / 255 for x in [63.0, 62.1, 66.7]]
+std['cifar100'] = [x / 255 for x in [68.2,  65.4,  70.4]]
+std['stl10'] = [0.229, 0.224, 0.225]
+std['npy'] = [0.229, 0.224, 0.225]
+std['npy224'] = [0.229, 0.224, 0.225]
+std['oct'] = [11.766, 11.766, 11.766]
+
 # Set up the argument parser
 parser = argparse.ArgumentParser()
 parser.add_argument('--config_path',
                     help='Path to the config file',
                     type=str)
 
-"""
-parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
-parser.add_argument('--data_type', default='stl10',
-                    help='path to dataset')
-parser.add_argument('--data', metavar='DIR', default='./datasets/stl10',
-                    help='path to dataset')
-parser.add_argument('--all', default=1, type=int,
-                    help='1 denotes using both train and test data')
-parser.add_argument('--img_size', default=96, type=int,
-                    help='image size')
-parser.add_argument('--save_folder', metavar='DIR', default='./results/stl10/moco',
-                    help='path to dataset')
-parser.add_argument('--save-freq', default=1, type=int, metavar='N',
-                    help='frequency of saving model')
-parser.add_argument('--arch', metavar='ARCH', default='clusterresnet')
-parser.add_argument('--workers', default=4, type=int, metavar='N',
-                    help='number of data loading workers (default: 32)')
-parser.add_argument('--epochs', default=1000, type=int, metavar='N',
-                    help='number of total epochs to run')
-parser.add_argument('--start-epoch', default=0, type=int, metavar='N',
-                    help='manual epoch number (useful on restarts)')
-parser.add_argument('--batch-size', default=128, type=int,
-                    metavar='N',
-                    help='mini-batch size (default: 256), this is the total '
-                         'batch size of all GPUs on the current node when '
-                         'using Data Parallel or Distributed Data Parallel')
-parser.add_argument('--lr', '--learning-rate', default=0.015, type=float,
-                    metavar='LR', help='initial learning rate', dest='lr')
-parser.add_argument('--schedule', default=[120, 160], nargs='*', type=int,
-                    help='learning rate schedule (when to drop lr by 10x)')
-parser.add_argument('--momentum', default=0.9, type=float, metavar='M',
-                    help='momentum of SGD solver')
-parser.add_argument('--wd', '--weight-decay', default=1e-4, type=float,
-                    metavar='W', help='weight decay (default: 1e-4)',
-                    dest='weight_decay')
-parser.add_argument('--print-freq', default=10, type=int,
-                    metavar='N', help='print frequency (default: 10)')
-parser.add_argument('--resume', default='./results/stl10/moco/checkpoint_last.pth.tar', type=str, metavar='PATH',
-                    help='path to latest checkpoint (default: none)')
-parser.add_argument('--world-size', default=1, type=int,
-                    help='number of nodes for distributed training')
-parser.add_argument('--rank', default=0, type=int,
-                    help='node rank for distributed training')
-parser.add_argument('--dist-url', default='tcp://localhost:10001', type=str,
-                    help='url used to set up distributed training')
-parser.add_argument('--dist-backend', default='nccl', type=str,
-                    help='distributed backend')
-parser.add_argument('--seed', default=None, type=int,
-                    help='seed for initializing training. ')
-parser.add_argument('--gpu', default=None, type=int,
-                    help='GPU id to use.')
-parser.add_argument('--multiprocessing-distributed', action='store_false',
-                    help='Use multi-processing distributed training to launch '
-                         'N processes per node, which has N GPUs. This is the '
-                         'fastest way to use PyTorch for either single node or '
-                         'multi node data parallel training')
-
-# moco specific configs:
-parser.add_argument('--moco-dim', default=128, type=int,
-                    help='feature dimension (default: 128)')
-parser.add_argument('--moco-k', default=65536, type=int,
-                    help='queue size; number of negative keys (default: 65536)')
-parser.add_argument('--moco-m', default=0.999, type=float,
-                    help='moco momentum of updating key encoder (default: 0.999)')
-parser.add_argument('--moco-t', default=0.2, type=float,
-                    help='softmax temperature (default: 0.07)')
-
-# options for moco v2
-parser.add_argument('--mlp', action='store_false',
-                    help='use mlp head')
-parser.add_argument('--aug-plus', action='store_false',
-                    help='use moco v2 data augmentation')
-parser.add_argument('--cos', action='store_false',
-                    help='use cosine lr schedule')
-"""
-
 def main():
     args = parser.parse_args()
     if args.config_path is None:
-        if platform == "linux" or platform == "linux2":
-            args.config_path = pathlib.Path('../../config.yaml')
-        elif platform == "win32":
-            args.config_path = pathlib.Path('../../config_windows.yaml')
+        args.config_path = pathlib.Path('../../config.yaml')
     config_file = pathlib.Path(args.config_path)
+
     if not config_file.exists():
         print(f'Config file not found at {args.config_path}')
         raise SystemExit(1)
+
     configs = utils.load_configs(config_file)
-    ### Convert config file values to the args variable equivalent (match the format of the existing code)
-    print("Assigning config values to corresponding args variables...")
-    # Dataset
-    dataset_root = pathlib.Path(configs['data']['dataset_root'])
-    ds_split = configs['data']['ds_split']
+    if platform == "linux" or platform == "linux2":
+        dataset_root = pathlib.Path(configs['data']['dataset_root_linux'])
+        dataset_path = pathlib.Path(configs['SPICE']['MoCo']['dataset_path_linux'])
+    elif platform == "win32":
+        dataset_root = pathlib.Path(configs['data']['dataset_root_windows'])
+        dataset_path = pathlib.Path(configs['SPICE']['MoCo']['dataset_path_windows'])
     labels = configs['data']['labels']
     ascan_per_group = configs['data']['ascan_per_group']
     use_mini_dataset = configs['data']['use_mini_dataset']
     # oct_img_root = pathlib.Path(f'OCT_lab_data/{ascan_per_group}mscans')
     img_size_dict['oct'] = (512, ascan_per_group)
     num_cluster_dict['oct'] = len(labels)
+
+    ### Convert config file values to the args variable equivalent (match the format of the existing code)
+    print("Assigning config values to corresponding args variables...")
+    # Dataset
     args.labels_dict = {i: lbl for i, lbl in enumerate(labels)}
     args.map_df_paths = {
         split: dataset_root.joinpath(f"{ascan_per_group}mscans").joinpath(
@@ -163,7 +106,7 @@ def main():
         for split in ['train', 'valid', 'test']}
 
     args.data_type = configs['SPICE']['MoCo']['dataset_name']
-    args.data = pathlib.Path(configs['SPICE']['MoCo']['dataset_path']).joinpath('OCT_lab_data' if args.data_type == 'oct' else args.data_type)
+    args.data = pathlib.Path(dataset_path).joinpath('OCT_lab_data' if args.data_type == 'oct' else args.data_type)
     print(f"args.data: {args.data}")
 
     args.all = configs['SPICE']['MoCo']['use_all']
@@ -339,8 +282,8 @@ def main_worker(gpu, ngpus_per_node, args):
     cudnn.benchmark = True
 
     # Data loading code
-    normalize = transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                                     std=[0.229, 0.224, 0.225])
+    normalize = transforms.Normalize(mean=mean[args.data_type],
+                                     std=std[args.data_type])
     if args.aug_plus:
         # MoCo v2's aug: similar to SimCLR https://arxiv.org/abs/2002.05709
         augmentation = [

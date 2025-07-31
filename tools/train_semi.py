@@ -39,6 +39,21 @@ num_cluster_dict = {'stl10': 10,
                     'cifar10': 10,
                     'cifar100': 100}
 
+mean, std = {}, {}
+mean['cifar10'] = [x / 255 for x in [125.3, 123.0, 113.9]]
+mean['cifar100'] = [x / 255 for x in [129.3, 124.1, 112.4]]
+mean['stl10'] = [0.485, 0.456, 0.406]
+mean['npy'] = [0.485, 0.456, 0.406]
+mean['npy224'] = [0.485, 0.456, 0.406]
+mean['oct'] = [149.888, 149.888, 149.888]
+
+std['cifar10'] = [x / 255 for x in [63.0, 62.1, 66.7]]
+std['cifar100'] = [x / 255 for x in [68.2,  65.4,  70.4]]
+std['stl10'] = [0.229, 0.224, 0.225]
+std['npy'] = [0.229, 0.224, 0.225]
+std['npy224'] = [0.229, 0.224, 0.225]
+std['oct'] = [11.766, 11.766, 11.766]
+
 def main(args):
     '''
     For (Distributed)DataParallelism,
@@ -277,101 +292,6 @@ def main_worker(gpu, ngpus_per_node, args):
     
 
 if __name__ == "__main__":
-    """
-    import argparse
-    parser = argparse.ArgumentParser(description='')
-    
-    '''
-    Saving & loading of the model.
-    '''
-    parser.add_argument('--save_dir', type=str, default='./results/stl10')
-    parser.add_argument('--save_name', type=str, default='spice_semi')
-    parser.add_argument('--resume', action='store_true')
-    parser.add_argument('--load_path', type=str, default=None)
-    parser.add_argument('--overwrite', action='store_false')
-    
-    '''
-    Training Configuration of FixMatch
-    '''
-    
-    parser.add_argument('--epoch', type=int, default=1)
-    parser.add_argument('--num_train_iter', type=int, default=2**20, 
-                        help='total number of training iterations')
-    parser.add_argument('--num_eval_iter', type=int, default=1000,
-                        help='evaluation frequency')
-    parser.add_argument('--num_labels', type=int, default=6510)
-    parser.add_argument('--batch_size', type=int, default=16,
-                        help='total number of batch size of labeled data')
-    parser.add_argument('--uratio', type=int, default=7,
-                        help='the ratio of unlabeled data to labeld data in each mini-batch')
-    parser.add_argument('--eval_batch_size', type=int, default=1024,
-                        help='batch size of evaluation data loader (it does not affect the accuracy)')
-    
-    parser.add_argument('--hard_label', type=bool, default=True)
-    parser.add_argument('--T', type=float, default=0.5)
-    parser.add_argument('--p_cutoff', type=float, default=0.95)
-    parser.add_argument('--ema_m', type=float, default=0.999, help='ema momentum for eval_model')
-    parser.add_argument('--ulb_loss_ratio', type=float, default=1.0)
-    
-    '''
-    Optimizer configurations
-    '''
-    parser.add_argument('--lr', type=float, default=0.03)
-    parser.add_argument('--momentum', type=float, default=0.9)
-    parser.add_argument('--weight_decay', type=float, default=5e-4)
-    parser.add_argument('--amp', action='store_true', help='use mixed precision training or not')
-
-    '''
-    Backbone Net Configurations
-    '''
-    parser.add_argument('--net', type=str, default='WideResNet_stl10')
-    parser.add_argument('--net_from_name', type=bool, default=False)
-    parser.add_argument('--depth', type=int, default=28)
-    parser.add_argument('--widen_factor', type=int, default=2)
-    parser.add_argument('--leaky_slope', type=float, default=0.1)
-    parser.add_argument('--dropout', type=float, default=0.0)
-    
-    '''
-    Data Configurations
-    '''
-    
-    parser.add_argument('--data_dir', type=str, default='./datasets/stl10')
-    parser.add_argument('--dataset', type=str, default='stl10')
-    parser.add_argument('--label_file', type=str, default='./results/stl10/local_consistency/labels_reliable_0.986329_6510.npy')
-    parser.add_argument('--all', type=int, default=1)
-    parser.add_argument('--unlabeled', type=int, default=0)
-    parser.add_argument('--train_sampler', type=str, default='RandomSampler')
-    parser.add_argument('--num_classes', type=int, default=10)
-    parser.add_argument('--num_workers', type=int, default=1)
-    
-    '''
-    multi-GPUs & Distrbitued Training
-    '''
-    
-    ## args for distributed training (from https://github.com/pytorch/examples/blob/master/imagenet/main.py)
-    parser.add_argument('--world-size', default=1, type=int,
-                        help='number of nodes for distributed training')
-    parser.add_argument('--rank', default=0, type=int,
-                        help='**node rank** for distributed training')
-    parser.add_argument('--dist-url', default='tcp://localhost:10001', type=str,
-                        help='url used to set up distributed training')
-    parser.add_argument('--dist-backend', default='nccl', type=str,
-                        help='distributed backend')
-    parser.add_argument('--seed', default=0, type=int,
-                        help='seed for initializing training. ')
-    parser.add_argument('--gpu', default=None, type=int,
-                        help='GPU id to use.')
-    parser.add_argument('--multiprocessing-distributed', action='store_false',
-                        help='Use multi-processing distributed training to launch '
-                             'N processes per node, which has N GPUs. This is the '
-                             'fastest way to use PyTorch for either single node or '
-                             'multi node data parallel training')
-
-    args = parser.parse_args()
-    """
-
-    ########################################
-
     # Set up the argument parser
     parser = argparse.ArgumentParser()
     parser.add_argument('--config_path',
@@ -381,20 +301,25 @@ if __name__ == "__main__":
     args = parser.parse_args()
 
     if args.config_path is None:
-        if platform == "linux" or platform == "linux2":
-            args.config_path = pathlib.Path('../../config.yaml')
-        elif platform == "win32":
-            args.config_path = pathlib.Path('../../config_windows.yaml')
+        args.config_path = pathlib.Path('../../config.yaml')
     config_file = pathlib.Path(args.config_path)
+
     if not config_file.exists():
         print(f'Config file not found at {args.config_path}')
         raise SystemExit(1)
+
     configs = utils.load_configs(config_file)
-    dataset_root = pathlib.Path(configs['data']['dataset_root'])
+    if platform == "linux" or platform == "linux2":
+        dataset_root = pathlib.Path(configs['data']['dataset_root_linux'])
+        dataset_path = pathlib.Path(configs['SPICE']['MoCo']['dataset_path_linux'])
+    elif platform == "win32":
+        dataset_root = pathlib.Path(configs['data']['dataset_root_windows'])
+        dataset_path = pathlib.Path(configs['SPICE']['MoCo']['dataset_path_windows'])
     ds_split = configs['data']['ds_split']
     labels = configs['data']['labels']
     ascan_per_group = configs['data']['ascan_per_group']
     use_mini_dataset = configs['data']['use_mini_dataset']
+    # oct_img_root = pathlib.Path(f'OCT_lab_data/{ascan_per_group}mscans')
     img_size_dict['oct'] = (512, ascan_per_group)
     num_cluster_dict['oct'] = len(labels)
 
@@ -436,7 +361,7 @@ if __name__ == "__main__":
     args.dropout = configs['SPICE']['semi']['dropout']
 
     # Data configurations
-    args.data_dir = pathlib.Path(configs['SPICE']['MoCo']['dataset_path']).joinpath(
+    args.data_dir = dataset_path.joinpath(
         'OCT_lab_data' if moco_dataset_name == 'oct' else moco_dataset_name)
     args.dataset = moco_dataset_name
     args.label_file = f"{configs['SPICE']['MoCo']['save_folder']}/{moco_dataset_name}/{configs['SPICE']['local_consistency']['model_name']}/labels_reliable.npy"
