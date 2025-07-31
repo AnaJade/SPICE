@@ -173,6 +173,7 @@ class STL10(VisionDataset):
             images = np.reshape(everything, (-1, 3, 96, 96))
             images = np.transpose(images, (0, 1, 3, 2))
 
+        # images.shape: (5000, 3, 96, 96)
         return images, labels
 
     def _check_integrity(self) -> bool:

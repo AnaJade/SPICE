@@ -1,9 +1,13 @@
 import torch
 
 
-def load_model_weights(model, weights_file, model_type, head_id=0):
+def load_model_weights(model, weights_file, model_type, gpu=None, head_id=0):
     print("=> Initializing model '{}'".format(weights_file))
-    pre_model = torch.load(weights_file, map_location="cpu")
+    gpu = None
+    if gpu is None:
+        pre_model = torch.load(weights_file, map_location="cpu")
+    else:
+        pre_model = torch.load(weights_file, map_location=f'cuda:{gpu}')
     if model_type == "simclr":
         # rename simclr pre-trained keys
         state_dict = pre_model

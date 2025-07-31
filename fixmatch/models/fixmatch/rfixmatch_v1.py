@@ -6,13 +6,13 @@ from torch.cuda.amp import autocast, GradScaler
 
 import os
 import contextlib
-from fixmatch.train_utils import AverageMeter
+from SPICE.fixmatch.train_utils import AverageMeter
 
 from .fixmatch_utils import consistency_loss, Get_Scalar
-from fixmatch.train_utils import ce_loss
+from SPICE.fixmatch.train_utils import ce_loss
 import numpy as np
 from scipy.optimize import linear_sum_assignment
-from spice.utils.evaluation import calculate_acc, calculate_nmi, calculate_ari
+from SPICE.spice.utils.evaluation import calculate_acc, calculate_nmi, calculate_ari
 
 
 class FixMatch:
@@ -128,7 +128,7 @@ class FixMatch:
             assert num_ulb == x_ulb_s.shape[0]
             
             x_lb, x_ulb_w, x_ulb_s = x_lb.cuda(args.gpu), x_ulb_w.cuda(args.gpu), x_ulb_s.cuda(args.gpu)
-            y_lb = y_lb.cuda(args.gpu)
+            y_lb = y_lb.type(torch.LongTensor).cuda(args.gpu)
             idx = idx.cuda(args.gpu)
             
             inputs = torch.cat((x_lb, x_ulb_w, x_ulb_s))

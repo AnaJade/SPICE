@@ -1,0 +1,11 @@
+tools/results/*
+moco/__pycache__
+spice/__pycache__
+spice/config/__pycache__
+spice/data/__pycache__
+spice/model/__pycache__
+spice/model/feature_modules/__pycache__
+spice/model/heads/__pycache__
+spice/solver/__pycache__
+spice/utils/__pycache__
+

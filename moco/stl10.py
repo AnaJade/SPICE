@@ -137,6 +137,10 @@ class STL10(VisionDataset):
         """
         target: Optional[int]
         if self.labels is not None:
+            # self.data.shape = (105000, 3, 96, 96), type np.ndarray
+            # self.labels.shape = (105000,), type np.ndarray
+            # img.shape = (3, 96, 96), type np.ndarray
+            # target type int
             img, target = self.data[index], int(self.labels[index])
         else:
             img, target = self.data[index], None

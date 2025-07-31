@@ -10,6 +10,10 @@ import time
 import warnings
 import sys
 sys.path.insert(0, './')
+import pathlib
+import numpy as np
+import pandas as pd
+from sys import platform
 
 import torch
 import torch.nn as nn
@@ -22,19 +26,38 @@ import torch.utils.data
 import torch.utils.data.distributed
 import torchvision.transforms as transforms
 import torchvision.models as models
-from spice.model.feature_modules.cluster_resnet import ClusterResNet
-from spice.model.feature_modules.resnet_stl import resnet18
-from spice.model.feature_modules.resnet_cifar import resnet18_cifar
+from SPICE.spice.model.feature_modules.cluster_resnet import ClusterResNet
+from SPICE.spice.model.feature_modules.resnet_stl import resnet18
+from SPICE.spice.model.feature_modules.resnet_cifar import resnet18_cifar
 
-import moco.loader
-import moco.builder
-from moco.stl10 import STL10
-from moco.cifar import CIFAR10, CIFAR100
+import SPICE.moco.loader
+import SPICE.moco.builder
+from SPICE.moco.stl10 import STL10
+from SPICE.moco.cifar import CIFAR10, CIFAR100
 
-model_names = sorted(name for name in models.__dict__
-    if name.islower() and not name.startswith("__")
-    and callable(models.__dict__[name]))
+# Import utils
+parent_dir = pathlib.Path(__file__).resolve().parent.parent.parent
+sys.path.append(str(parent_dir))
+import utils
+from utils_data import OCTDataset
 
+model_names = sorted(name for name in models.__dict__ if name.islower() and not name.startswith("__") and callable(models.__dict__[name]))
+
+# Img size and moco_dim (nb of classes) values based on the dataset
+img_size_dict = {'stl10': 96,
+                 'cifar10': 32,
+                 'cifar100': 32}
+num_cluster_dict = {'stl10': 10,
+                    'cifar10': 10,
+                    'cifar100': 100}
+
+# Set up the argument parser
+parser = argparse.ArgumentParser()
+parser.add_argument('--config_path',
+                    help='Path to the config file',
+                    type=str)
+
+"""
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument('--data_type', default='stl10',
                     help='path to dataset')
@@ -108,29 +131,102 @@ parser.add_argument('--aug-plus', action='store_false',
                     help='use moco v2 data augmentation')
 parser.add_argument('--cos', action='store_false',
                     help='use cosine lr schedule')
-
+"""
 
 def main():
     args = parser.parse_args()
+    if args.config_path is None:
+        if platform == "linux" or platform == "linux2":
+            args.config_path = pathlib.Path('../../config.yaml')
+        elif platform == "win32":
+            args.config_path = pathlib.Path('../../config_windows.yaml')
+    config_file = pathlib.Path(args.config_path)
+    if not config_file.exists():
+        print(f'Config file not found at {args.config_path}')
+        raise SystemExit(1)
+    configs = utils.load_configs(config_file)
+    ### Convert config file values to the args variable equivalent (match the format of the existing code)
+    print("Assigning config values to corresponding args variables...")
+    # Dataset
+    dataset_root = pathlib.Path(configs['data']['dataset_root'])
+    ds_split = configs['data']['ds_split']
+    labels = configs['data']['labels']
+    ascan_per_group = configs['data']['ascan_per_group']
+    use_mini_dataset = configs['data']['use_mini_dataset']
+    # oct_img_root = pathlib.Path(f'OCT_lab_data/{ascan_per_group}mscans')
+    img_size_dict['oct'] = (512, ascan_per_group)
+    num_cluster_dict['oct'] = len(labels)
+    args.labels_dict = {i: lbl for i, lbl in enumerate(labels)}
+    args.map_df_paths = {
+        split: dataset_root.joinpath(f"{ascan_per_group}mscans").joinpath(
+            f"{split}{'Mini' if use_mini_dataset else ''}_mapping_{ascan_per_group}scans.csv")
+        for split in ['train', 'valid', 'test']}
 
-    if not os.path.exists(args.save_folder):
-        os.makedirs(args.save_folder)
+    args.data_type = configs['SPICE']['MoCo']['dataset_name']
+    args.data = pathlib.Path(configs['SPICE']['MoCo']['dataset_path']).joinpath('OCT_lab_data' if args.data_type == 'oct' else args.data_type)
+    print(f"args.data: {args.data}")
 
-    if args.seed is not None:
-        random.seed(args.seed)
-        torch.manual_seed(args.seed)
-        cudnn.deterministic = True
-        warnings.warn('You have chosen to seed training. '
-                      'This will turn on the CUDNN deterministic setting, '
-                      'which can slow down your training considerably! '
-                      'You may see unexpected behavior when restarting '
-                      'from checkpoints.')
+    args.all = configs['SPICE']['MoCo']['use_all']
+    args.img_size = img_size_dict[args.data_type]
+
+    # Training params
+    args.seed = configs['training']['random_seed']
+    args.save_folder = pathlib.Path(configs['SPICE']['MoCo']['save_folder']).joinpath(args.data_type).joinpath('moco')
+    args.save_freq = configs['SPICE']['MoCo']['save_freq']
+    args.arch = configs['SPICE']['MoCo']['base_model']
+    args.workers = configs['SPICE']['MoCo']['num_workers']
+    args.epochs = configs['SPICE']['MoCo']['max_epochs']
+    args.start_epoch = configs['SPICE']['MoCo']['start_epoch']
+    args.batch_size = configs['SPICE']['MoCo']['batch_size']
+    args.lr = configs['SPICE']['MoCo']['lr']
+    args.schedule = configs['SPICE']['MoCo']['lr_schedule']
+    args.momentum = configs['SPICE']['MoCo']['momentum']
+    args.weight_decay = configs['SPICE']['MoCo']['weight_decay']
+    args.print_freq = configs['SPICE']['MoCo']['print_freq']
+    args.resume = pathlib.Path(args.save_folder).joinpath('checkpoint_last.pth.tar') if configs['SPICE']['MoCo']['resume'] else False
+
+    # Multiprocessing
+    # More info on values: https://stackoverflow.com/a/76828907
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12345'
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    args.world_size = configs['SPICE']['MoCo']['world_size']
+    args.rank = configs['SPICE']['MoCo']['rank']
+    args.dist_url = configs['SPICE']['MoCo']['dist_url']
+    args.dist_backend = configs['SPICE']['MoCo']['dist_backend']
+    args.gpu = None if configs['SPICE']['MoCo']['gpu_id'] == 'None' else configs['SPICE']['MoCo']['gpu_id']
+    args.multiprocessing_distributed = configs['SPICE']['MoCo']['multiprocessing_distributed']
+
+    # moco specific configs:
+    args.moco_dim = num_cluster_dict[args.data_type]
+    args.moco_k = configs['SPICE']['MoCo']['moco_queue_size']
+    args.moco_m = configs['SPICE']['MoCo']['moco_momentum']
+    args.moco_t = configs['SPICE']['MoCo']['moco_softmax_temp']
+    # options for moco v2
+    args.mlp = configs['SPICE']['MoCo']['moco2_mlp']
+    args.aug_plus = configs['SPICE']['MoCo']['moco2_aug_plus']
+    args.cos = configs['SPICE']['MoCo']['moco2_cos']
+
+    # Save folder
+    if not args.save_folder.is_dir():
+        args.save_folder.mkdir(parents=True)
+
+    # Set all random seeds
+    print("Setting random seed...")
+    random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    cudnn.deterministic = True
+    warnings.warn('You have chosen to seed training. '
+                  'This will turn on the CUDNN deterministic setting, '
+                  'which can slow down your training considerably! '
+                  'You may see unexpected behavior when restarting '
+                  'from checkpoints.')
 
     if args.gpu is not None:
         warnings.warn('You have chosen a specific GPU. This will completely '
                       'disable data parallelism.')
 
-    if args.dist_url == "env://" and args.world_size == -1:
+    if "env://" in args.dist_url and args.world_size == -1:
         args.world_size = int(os.environ["WORLD_SIZE"])
 
     args.distributed = args.world_size > 1 or args.multiprocessing_distributed
@@ -149,6 +245,7 @@ def main():
 
 
 def main_worker(gpu, ngpus_per_node, args):
+    print("Running main worker function...")
     args.gpu = gpu
 
     # suppress printing if not master
@@ -161,12 +258,13 @@ def main_worker(gpu, ngpus_per_node, args):
         print("Use GPU: {} for training".format(args.gpu))
 
     if args.distributed:
-        if args.dist_url == "env://" and args.rank == -1:
+        if "env://" in args.dist_url and args.rank == -1:
             args.rank = int(os.environ["RANK"])
         if args.multiprocessing_distributed:
             # For multiprocessing distributed training, rank needs to be the
             # global rank among all the processes
             args.rank = args.rank * ngpus_per_node + gpu
+        # Sample init: https://stackoverflow.com/a/76828907
         dist.init_process_group(backend=args.dist_backend, init_method=args.dist_url,
                                 world_size=args.world_size, rank=args.rank)
     # create model
@@ -179,10 +277,10 @@ def main_worker(gpu, ngpus_per_node, args):
         base_model = resnet18_cifar
     else:
         base_model = models.__dict__[args.arch]
-    model = moco.builder.MoCo(
+    model = SPICE.moco.builder.MoCo(
         base_model,
         args.moco_dim, args.moco_k, args.moco_m, args.moco_t, args.mlp)
-    print(model)
+    # print(model)
 
     if args.distributed:
         # For multiprocessing distributed, DistributedDataParallel constructor
@@ -206,6 +304,7 @@ def main_worker(gpu, ngpus_per_node, args):
         torch.cuda.set_device(args.gpu)
         model = model.cuda(args.gpu)
         # comment out the following line for debugging
+        # Will raise ValueError: Default process group has not been initialized, please make sure to call init_process_group.
         raise NotImplementedError("Only DistributedDataParallel is supported.")
     else:
         # AllGather implementation (batch shuffle, queue update, etc.) in
@@ -250,7 +349,7 @@ def main_worker(gpu, ngpus_per_node, args):
                 transforms.ColorJitter(0.4, 0.4, 0.4, 0.1)  # not strengthened
             ], p=0.8),
             transforms.RandomGrayscale(p=0.2),
-            transforms.RandomApply([moco.loader.GaussianBlur([.1, 2.])], p=0.5),
+            transforms.RandomApply([SPICE.moco.loader.GaussianBlur([.1, 2.])], p=0.5),
             transforms.RandomHorizontalFlip(),
             transforms.ToTensor(),
             normalize
@@ -266,19 +365,26 @@ def main_worker(gpu, ngpus_per_node, args):
             normalize
         ]
 
+    print(f"Creating {args.data_type} dataset...")
     if args.data_type == 'stl10':
         if args.all:
             split = "train+test+unlabeled"
         else:
             split = "train+unlabeled"
         train_dataset = STL10(args.data, split=split,
-                              transform=moco.loader.TwoCropsTransform(transforms.Compose(augmentation)))
+                              transform=SPICE.moco.loader.TwoCropsTransform(transforms.Compose(augmentation)),
+                              download=True)
     elif args.data_type == 'cifar10':
         train_dataset = CIFAR10(args.data, all=args.all,
-                                transform=moco.loader.TwoCropsTransform(transforms.Compose(augmentation)))
+                                transform=SPICE.moco.loader.TwoCropsTransform(transforms.Compose(augmentation)),
+                                download=True)
     elif args.data_type == 'cifar100':
         train_dataset = CIFAR100(args.data, all=args.all,
-                                 transform=moco.loader.TwoCropsTransform(transforms.Compose(augmentation)))
+                                 transform=SPICE.moco.loader.TwoCropsTransform(transforms.Compose(augmentation)),
+                                 download=True)
+    elif args.data_type == 'oct':
+        train_dataset = OCTDataset(args.data, 'train', args.map_df_paths, args.labels_dict,
+                                   SPICE.moco.loader.TwoCropsTransform(transforms.Compose(augmentation)))
     else:
         raise TypeError
 
@@ -287,10 +393,18 @@ def main_worker(gpu, ngpus_per_node, args):
     else:
         train_sampler = None
 
+    # train_loader = torch.utils.data.DataLoader(
+    #     train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
+    #     num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True)
+
+    # Added to solve OSError: [Errno 22] Invalid argument
+    # Source: https://discuss.pytorch.org/t/oserror-errno-22-invalid-argument-pickle-unpicklingerror-pickle-data-was-truncated/138469/2
+    # Documentation: https://docs.pytorch.org/docs/stable/notes/windows.html#multiprocessing-error-without-if-clause-protection
     train_loader = torch.utils.data.DataLoader(
         train_dataset, batch_size=args.batch_size, shuffle=(train_sampler is None),
-        num_workers=args.workers, pin_memory=True, sampler=train_sampler, drop_last=True)
+        sampler=train_sampler, drop_last=True)
 
+    print("Starting train loop...")
     for epoch in range(args.start_epoch, args.epochs):
         if args.distributed:
             train_sampler.set_epoch(epoch)

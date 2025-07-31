@@ -1,5 +1,5 @@
 import torchvision.transforms as transforms
-from spice.data.augment import Augment, Cutout
+from SPICE.spice.data.augment import Augment, Cutout
 
 
 def get_train_transformations(cfg):

@@ -1,6 +1,11 @@
 import argparse
+import pathlib
+import random
 import os
 import sys
+import pandas as pd
+from sys import platform
+from addict import Dict
 sys.path.insert(0, './')
 
 import torch
@@ -10,18 +15,23 @@ import torch.optim
 import torch.utils.data
 import torch.utils.data.distributed
 import torchvision.models as models
-from spice.config import Config
-from spice.data.build_dataset import build_dataset
-from spice.model.sim2sem import Sim2Sem
-from spice.utils.miscellaneous import mkdir, save_config
+from SPICE.spice.config import Config
+from SPICE.spice.data.build_dataset import build_dataset
+from SPICE.spice.model.sim2sem import Sim2Sem
+from SPICE.spice.utils.miscellaneous import mkdir, save_config
 import numpy as np
-from spice.utils.evaluation import calculate_acc, calculate_nmi, calculate_ari
+from SPICE.spice.utils.evaluation import calculate_acc, calculate_nmi, calculate_ari
 
+# Import utils
+parent_dir = pathlib.Path(__file__).resolve().parent.parent.parent
+sys.path.append(str(parent_dir))
+import utils
 
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
 
+"""
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument(
     "--config-file",
@@ -35,21 +45,148 @@ parser.add_argument(
     default="./results/stl10/embedding/feas_moco_512_l2.npy",
     type=str,
 )
+"""
+# Img size and moco_dim (nb of classes) values based on the dataset
+img_size_dict = {'stl10': 96,
+                 'cifar10': 32,
+                 'cifar100': 32}
+num_cluster_dict = {'stl10': 10,
+                    'cifar10': 10,
+                    'cifar100': 100}
 
+# Set up the argument parser
+parser = argparse.ArgumentParser()
+parser.add_argument('--config_path',
+                    help='Path to the config file',
+                    type=str)
 
 def main():
     args = parser.parse_args()
 
-    cfg = Config.fromfile(args.config_file)
+    if args.config_path is None:
+        if platform == "linux" or platform == "linux2":
+            args.config_path = pathlib.Path('../../config.yaml')
+        elif platform == "win32":
+            args.config_path = pathlib.Path('../../config_windows.yaml')
+    config_file = pathlib.Path(args.config_path)
+    if not config_file.exists():
+        print(f'Config file not found at {args.config_path}')
+        raise SystemExit(1)
+    configs = utils.load_configs(config_file)
+    cfg = Dict()
 
-    cfg.embedding = args.embedding
+    ### Convert config file values to the args variable equivalent (match the format of the existing code)
+    print("Assigning config values to corresponding args variables...")
+    # Dataset
+    dataset_root = pathlib.Path(configs['data']['dataset_root'])
+    ds_split = configs['data']['ds_split']
+    labels = configs['data']['labels']
+    ascan_per_group = configs['data']['ascan_per_group']
+    use_mini_dataset = configs['data']['use_mini_dataset']
+    img_size_dict['oct'] = (512, ascan_per_group)
+    num_cluster_dict['oct'] = len(labels)
+
+    # Cfg file values
+    cfg.model_name = configs['SPICE']['local_consistency']['model_name']
+    moco_dataset_name = configs['SPICE']['MoCo']['dataset_name']
+    cfg.embedding = pathlib.Path(configs['SPICE']['MoCo']['save_folder']).joinpath(moco_dataset_name).joinpath(
+        configs['SPICE']['embedding']['model_name']).joinpath('feas_moco_512_l2.npy')
+    cfg.weight = pathlib.Path(configs['SPICE']['MoCo']['save_folder']).joinpath(moco_dataset_name).joinpath(
+        configs['SPICE']['SPICE_self']['model_name']).joinpath('checkpoint_select.pth.tar')
+    cfg.model_type = configs['SPICE']['MoCo']['base_model']
+    cfg.num_cluster = num_cluster_dict[moco_dataset_name]
+    cfg.batch_size = configs['SPICE']['local_consistency']['batch_size']
+    cfg.fea_dim = configs['SPICE']['SPICE_self']['fea_dim']
+    cfg.center_ratio = configs['SPICE']['SPICE_self']['center_ratio']
+    cfg.seed = configs['training']['random_seed']
+
+    # Multiprocessing
+    # More info on values: https://stackoverflow.com/a/76828907
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    cfg.world_size = configs['SPICE']['MoCo']['world_size']
+    cfg.workers = configs['SPICE']['MoCo']['num_workers']
+    cfg.rank = configs['SPICE']['MoCo']['rank']
+    cfg.dist_url = configs['SPICE']['MoCo']['dist_url']
+    cfg.dist_backend = configs['SPICE']['MoCo']['dist_backend']
+    cfg.gpu = None if configs['SPICE']['MoCo']['gpu_id'] == 'None' else configs['SPICE']['MoCo']['gpu_id']
+    cfg.multiprocessing_distributed = configs['SPICE']['MoCo']['multiprocessing_distributed']
+
+    # Data test
+    cfg.data_test = Dict(dict(
+        type=f'{moco_dataset_name}_emb', # "stl10_emb",
+        root_folder=pathlib.Path(configs['SPICE']['MoCo']['dataset_path']).joinpath(
+        'OCT_lab_data' if moco_dataset_name == 'oct' else moco_dataset_name), # "./datasets/stl10",
+        embedding=None,
+        split='train', # "train+test",
+        shuffle=False,
+        ims_per_batch=configs['SPICE']['local_consistency']['batch_size_test'],
+        aspect_ratio_grouping=False,
+        train=False,
+        show=False,
+        trans1=Dict(dict(
+            aug_type="test",
+            normalize=Dict(dict(mean=[0.485, 0.456, 0.406],
+                           std=[0.229, 0.224, 0.225])),
+        )),
+        trans2=Dict(dict(
+            aug_type="test",
+            normalize=Dict(dict(mean=[0.485, 0.456, 0.406],
+                           std=[0.229, 0.224, 0.225])),
+        )),
+
+    ))
+    cfg.data_test.labels_dict = {i: lbl for i, lbl in enumerate(labels)}
+    cfg.data_test.map_df_paths = {
+        split: dataset_root.joinpath(f"{ascan_per_group}mscans").joinpath(
+            f"{split}{'Mini' if use_mini_dataset else ''}_mapping_{ascan_per_group}scans.csv")
+        for split in ['train', 'valid', 'test']}
+
+    # Model
+    cfg.model = Dict(dict(
+        feature=Dict(dict(
+            type=cfg.model_type,
+            num_classes=cfg.num_cluster,
+            in_channels=3,
+            in_size=img_size_dict[moco_dataset_name],
+            batchnorm_track=True,
+            test=False,
+            feature_only=True
+        )),
+
+        head=Dict(dict(type="sem_multi",
+                  multi_heads=[Dict(dict(classifier=Dict(dict(type="mlp", num_neurons=[cfg.fea_dim, cfg.fea_dim, cfg.num_cluster],
+                                                    last_activation="softmax")),
+                                    feature_conv=None,
+                                    num_cluster=cfg.num_cluster,
+                                    ratio_start=1,
+                                    ratio_end=1,
+                                    center_ratio=cfg.center_ratio,
+                                    ))] * 1,
+                  ratio_confident=0.90,
+                  num_neighbor=100,
+                  )),
+        model_type="moco_select",
+        pretrained=cfg.weight,
+        head_id=3,
+        freeze_conv=True,
+        )
+    )
+
+    # Output dir
+    cfg.results.output_dir = f"{configs['SPICE']['MoCo']['save_folder']}/{moco_dataset_name}/{cfg.model_name}"
+
+    ### Old code
+    # cfg = Config.fromfile(args.config_file)
+    # cfg.embedding = args.embedding
 
     output_dir = cfg.results.output_dir
     if output_dir:
         mkdir(output_dir)
 
     output_config_path = os.path.join(output_dir, 'config.py')
-    save_config(cfg, output_config_path)
+    # save_config(cfg, output_config_path)
 
     if cfg.gpu is not None:
         print("Use GPU: {}".format(cfg.gpu))
@@ -119,11 +256,28 @@ def main():
 
     print("ACC: {}, NMI: {}, ARI: {}".format(acc, nmi, ari))
 
+    # Save original labels and scores
+    preds = pd.DataFrame(np.concat((np.stack((pred_labels, gt_labels), axis=1), scores), axis=1),
+                         columns=['pred', 'label'] + [f'score_{i}' for i in range(10)])
+    preds_best = pd.concat([preds[preds['label'] == i].sort_values(f'score_{i}', ascending=False).head(20) for i in range(10)], axis=0)
+
+    # DEBUG: lower consistency thresholds
+    # model.head.ratio_confident = 0.9 # OG value: 0.9
+    # model.head.score_th = 0.99 # OG value: 0.99
+
     idx_select, labels_select = model(feas_sim=feas_sim, scores=scores, forward_type="local_consistency")
+    # DEBUG: Create dummy idx_select and labels_select
+    """
+    preds_best.loc[(preds_best['label'] == 4) & (preds_best['score_4'] >= 0.1), 'pred'] = 4  # Create at least one correctly predicted 4 label
+    img_select = preds_best.reset_index().groupby('label').first().reset_index().set_index('index')
+    idx_select = torch.tensor(img_select.sort_index().index.to_list())
+    labels_select = torch.tensor(img_select.sort_index()['pred'].to_list())
+    """
 
-    gt_labels_select = gt_labels[idx_select]
+    # gt_labels_select = gt_labels[idx_select]
+    gt_labels_select = gt_labels[[int(i) for i in idx_select]]
 
-    acc = calculate_acc(labels_select, gt_labels_select)
+    acc = calculate_acc(labels_select.numpy(), gt_labels_select)
     print('ACC of local consistency: {}, number of samples: {}'.format(acc, len(gt_labels_select)))
 
     labels_correct = np.zeros([feas_sim.shape[0]]) - 100

@@ -1,6 +1,6 @@
 import torch
 import torch.nn.functional as F
-from fixmatch.train_utils import ce_loss
+from SPICE.fixmatch.train_utils import ce_loss
 
 
 class Get_Scalar:

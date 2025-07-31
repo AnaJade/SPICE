@@ -47,25 +47,25 @@ def net_builder(net_name, from_name: bool, net_conf=None):
         
     else:
         if net_name == 'WideResNet':
-            import fixmatch.models.nets.wrn as net
+            import SPICE.fixmatch.models.nets.wrn as net
             builder = getattr(net, 'build_WideResNet')()
         elif net_name == 'WideResNet_stl10':
-            import fixmatch.models.nets.wrn_stl10 as net
+            import SPICE.fixmatch.models.nets.wrn_stl10 as net
             builder = getattr(net, 'build_WideResNet')()
         elif net_name == 'ClusterResNet':
-            import fixmatch.models.nets.cluster_resnet as net
+            import SPICE.fixmatch.models.nets.cluster_resnet as net
             builder = getattr(net, 'build_ClusterResNet')()
         elif net_name == 'WideResNet_tiny':
-            import fixmatch.models.nets.wrn_tiny as net
+            import SPICE.fixmatch.models.nets.wrn_tiny as net
             builder = getattr(net, 'build_WideResNet')()
         elif net_name == 'resnet18':
-            import fixmatch.models.nets.resnet_stl as net
+            import SPICE.fixmatch.models.nets.resnet_stl as net
             builder = getattr(net, 'build_ResNet18')()
         elif net_name == 'resnet18_cifar':
-            import fixmatch.models.nets.resnet_cifar as net
+            import SPICE.fixmatch.models.nets.resnet_cifar as net
             builder = getattr(net, 'build_ResNet18')()
         elif net_name == 'resnet34':
-            import fixmatch.models.nets.imagenet as net
+            import SPICE.fixmatch.models.nets.imagenet as net
             builder = getattr(net, 'build_ResNet34')()
         else:
             assert Exception("Not Implemented Error")

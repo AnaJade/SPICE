@@ -4,8 +4,8 @@ from ..feature_modules.build_feature_module import build_feature_module
 
 import numpy as np
 import torch.nn.functional as F
-from spice.model.heads import build_head
-from spice.model.heads.sem_head import SemHead
+from SPICE.spice.model.heads import build_head
+from SPICE.spice.model.heads.sem_head import SemHead
 
 import matplotlib.pyplot as plt
 

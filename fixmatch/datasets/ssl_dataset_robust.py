@@ -1,3 +1,5 @@
+import sys
+import pathlib
 import numpy as np
 
 import torch
@@ -14,18 +16,24 @@ from .npy import NPY
 import torchvision
 from torchvision import datasets, transforms
 
+parent_dir = pathlib.Path(__file__).resolve().parent.parent.parent.parent
+sys.path.append(str(parent_dir))
+from utils_data import OCTDataset
+
 mean, std = {}, {}
 mean['cifar10'] = [x / 255 for x in [125.3, 123.0, 113.9]]
 mean['cifar100'] = [x / 255 for x in [129.3, 124.1, 112.4]]
 mean['stl10'] = [0.485, 0.456, 0.406]
 mean['npy'] = [0.485, 0.456, 0.406]
 mean['npy224'] = [0.485, 0.456, 0.406]
+mean['oct'] = [] # result of np.mean(data, (0, 1, 2))/255
 
 std['cifar10'] = [x / 255 for x in [63.0, 62.1, 66.7]]
 std['cifar100'] = [x / 255 for x in [68.2,  65.4,  70.4]]
 std['stl10'] = [0.229, 0.224, 0.225]
 std['npy'] = [0.229, 0.224, 0.225]
 std['npy224'] = [0.229, 0.224, 0.225]
+std['oct'] = [] # result of np.std(data, (0, 1, 2))
 
 
 def get_transform(mean, std, dataset, train=True):
@@ -60,7 +68,8 @@ class SSL_Dataset:
                  unlabeled=False,
                  label_file=None,
                  num_classes=10,
-                 data_dir='./data'):
+                 data_dir='./data',
+                 oct_args=None):
         """
         Args
             name: name of dataset in torchvision.datasets (cifar10, cifar100)
@@ -77,6 +86,7 @@ class SSL_Dataset:
         self.label_file = label_file
         self.all = all
         self.unlabeled = unlabeled
+        self.oct_args = oct_args
         
     def get_data(self):
         """
@@ -100,10 +110,15 @@ class SSL_Dataset:
             else:
                 split = 'test'
             dset = STL10(root=self.data_dir, split=split)
+            # dset.data.shape: (5000, 3, 96, 96)
+            # dset.data.transpose([0, 2, 3, 1]).shape: (5000, 96, 96, 3)
             data = dset.data.transpose([0, 2, 3, 1])
 
         elif self.name == "npy" or self.name == 'npy224':
             dset = NPY(root=self.data_dir)
+            data = dset.data
+        elif self.name == "oct":
+            dset = OCTDataset(root=pathlib.Path(self.data_dir), split=self.oct_args['split'], map_df_paths=self.oct_args['map_df_paths'], labels_dict=self.oct_args['labels_dict'], preload_data=self.oct_args['preload_data'])
             data = dset.data
         else:
             raise TypeError
@@ -164,17 +179,19 @@ class SSL_Dataset:
             BasicDataset (for labeled data), BasicDataset (for unlabeld data)
         """
         
-        data, targets = self.get_data()
+        data, targets = self.get_data() #data.shape: (113000, 96, 96, 3), targets.shape: (113000,)
         num_classes = self.num_classes
         transform = self.transform
         data_dir = self.data_dir
 
         index = np.where(targets >= 0)[0]
 
+        # lb_data.shape: (10, 96, 96, 3)
+        # ulb_data.shape: (113000, 96, 96, 3)
         lb_data, lb_targets, ulb_data, ulb_targets = split_ssl_data(data, targets, 
                                                                     num_labels, num_classes, 
                                                                     index, include_lb_to_ulb)
-        
+
         lb_dset = BasicDataset(lb_data, lb_targets, num_classes, 
                                transform, False, None, onehot)
         

@@ -1,4 +1,5 @@
 import argparse
+import pathlib
 import builtins
 import math
 import os
@@ -7,6 +8,8 @@ import shutil
 import time
 import warnings
 import sys
+from sys import platform
+from addict import Dict
 sys.path.insert(0, './')
 import torch
 import torch.nn as nn
@@ -18,22 +21,41 @@ import torch.multiprocessing as mp
 import torch.utils.data
 import torch.utils.data.distributed
 import torchvision.models as models
-from spice.config import Config
-from spice.data.build_dataset import build_dataset
-from spice.model.sim2sem import Sim2Sem
-from spice.solver import make_lr_scheduler, make_optimizer
-from spice.utils.miscellaneous import mkdir, save_config
-from spice.utils.evaluation import calculate_acc, calculate_nmi, calculate_ari
-from spice.utils.load_model_weights import load_model_weights
-from spice.utils.logger import setup_logger
+from SPICE.spice.config import Config
+from SPICE.spice.data.build_dataset import build_dataset
+from SPICE.spice.model.sim2sem import Sim2Sem
+from SPICE.spice.solver import make_lr_scheduler, make_optimizer
+from SPICE.spice.utils.miscellaneous import mkdir, save_config
+from SPICE.spice.utils.evaluation import calculate_acc, calculate_nmi, calculate_ari
+from SPICE.spice.utils.load_model_weights import load_model_weights
+from SPICE.spice.utils.logger import setup_logger
 import logging
-from spice.utils.comm import get_rank
+from SPICE.spice.utils.comm import get_rank
 import numpy as np
+
+# Import utils
+parent_dir = pathlib.Path(__file__).resolve().parent.parent.parent
+sys.path.append(str(parent_dir))
+import utils
 
 model_names = sorted(name for name in models.__dict__
     if name.islower() and not name.startswith("__")
     and callable(models.__dict__[name]))
 
+# Img size and moco_dim (nb of classes) values based on the dataset
+img_size_dict = {'stl10': 96,
+                 'cifar10': 32,
+                 'cifar100': 32}
+num_cluster_dict = {'stl10': 10,
+                    'cifar10': 10,
+                    'cifar100': 100}
+
+# Set up the argument parser
+parser = argparse.ArgumentParser()
+parser.add_argument('--config_path',
+                    help='Path to the config file',
+                    type=str)
+"""
 parser = argparse.ArgumentParser(description='PyTorch ImageNet Training')
 parser.add_argument(
     "--config-file",
@@ -48,11 +70,201 @@ parser.add_argument(
     default=1,
     type=int,
 )
+"""
 
 
 def main():
     args = parser.parse_args()
-    cfg = Config.fromfile(args.config_file)
+    if args.config_path is None:
+        if platform == "linux" or platform == "linux2":
+            args.config_path = pathlib.Path('../../config.yaml')
+        elif platform == "win32":
+            args.config_path = pathlib.Path('../../config_windows.yaml')
+    config_file = pathlib.Path(args.config_path)
+    if not config_file.exists():
+        print(f'Config file not found at {args.config_path}')
+        raise SystemExit(1)
+    configs = utils.load_configs(config_file)
+    dataset_root = pathlib.Path(configs['data']['dataset_root'])
+    ds_split = configs['data']['ds_split']
+    labels = configs['data']['labels']
+    ascan_per_group = configs['data']['ascan_per_group']
+    use_mini_dataset = configs['data']['use_mini_dataset']
+    img_size_dict['oct'] = (512, ascan_per_group)
+    num_cluster_dict['oct'] = len(labels)
+    ### Convert config file values to the args variable equivalent (match the format of the existing code)
+    print("Assigning config values to corresponding args variables...")
+    cfg = Dict()
+    cfg.labels_dict = {i: lbl for i, lbl in enumerate(labels)}
+    cfg.map_df_paths = {
+        split: dataset_root.joinpath(f"{split}{'Mini' if use_mini_dataset else ''}_mapping_{ascan_per_group}scans.csv")
+        for split in ['train', 'valid', 'test']}
+    cfg.all = configs['SPICE']['SPICE_self']['all']
+    cfg.model_name = configs['SPICE']['SPICE_self']['model_name']
+    moco_dataset_name = configs['SPICE']['MoCo']['dataset_name']
+    cfg.pre_model = pathlib.Path(configs['SPICE']['MoCo']['save_folder']).joinpath(moco_dataset_name).joinpath(
+        'moco').joinpath(
+        configs['SPICE']['embedding']['weight'])
+    cfg.embedding = pathlib.Path(configs['SPICE']['MoCo']['save_folder']).joinpath(moco_dataset_name).joinpath(
+        configs['SPICE']['embedding']['model_name']).joinpath('feas_moco_512_l2.npy')
+    cfg.resume = pathlib.Path(configs['SPICE']['MoCo']['save_folder']).joinpath(moco_dataset_name).joinpath(
+        configs['SPICE']['SPICE_self']['model_name']).joinpath(
+        'checkpoint_last.pth.tar') if configs['SPICE']['SPICE_self']['resume'] else False
+    cfg.model_type = configs['SPICE']['MoCo']['base_model']
+    cfg.num_head = configs['SPICE']['SPICE_self']['num_head']
+    cfg.num_workers = configs['SPICE']['MoCo']['num_workers']
+    cfg.device_id = None if configs['SPICE']['MoCo']['gpu_id'] == 'None' else configs['SPICE']['MoCo']['gpu_id']
+    cfg.num_train = configs['SPICE']['SPICE_self']['num_train']
+    cfg.num_cluster = num_cluster_dict[moco_dataset_name]
+    cfg.batch_size = configs['SPICE']['SPICE_self']['batch_size']
+    cfg.target_sub_batch_size = configs['SPICE']['SPICE_self']['target_sub_batch_size']
+    cfg.train_sub_batch_size = configs['SPICE']['SPICE_self']['train_sub_batch_size']
+    cfg.batch_size_test = configs['SPICE']['SPICE_self']['batch_size_test']
+    cfg.num_trans_aug = configs['SPICE']['SPICE_self']['num_trans_aug']
+    cfg.num_repeat = configs['SPICE']['SPICE_self']['num_repeat']
+    cfg.fea_dim = configs['SPICE']['SPICE_self']['fea_dim']
+    cfg.att_conv_dim = num_cluster_dict[moco_dataset_name]
+    cfg.att_size = configs['SPICE']['SPICE_self']['att_size']
+    cfg.center_ratio = configs['SPICE']['SPICE_self']['center_ratio']
+    cfg.sim_center_ratio = configs['SPICE']['SPICE_self']['sim_center_ratio']
+    cfg.epochs = configs['SPICE']['SPICE_self']['epochs']
+    cfg.seed = configs['training']['random_seed']
+
+    # Multiprocessing
+    # More info on values: https://stackoverflow.com/a/76828907
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    cfg.world_size = configs['SPICE']['MoCo']['world_size']
+    cfg.workers = configs['SPICE']['MoCo']['num_workers']
+    cfg.rank = configs['SPICE']['MoCo']['rank']
+    cfg.dist_url = configs['SPICE']['MoCo']['dist_url']
+    cfg.dist_backend = configs['SPICE']['MoCo']['dist_backend']
+    cfg.gpu = None if configs['SPICE']['MoCo']['gpu_id'] == 'None' else configs['SPICE']['MoCo']['gpu_id']
+    cfg.multiprocessing_distributed = configs['SPICE']['MoCo']['multiprocessing_distributed']
+
+    cfg.start_epoch = configs['SPICE']['SPICE_self']['start_epoch']
+    cfg.print_freq = configs['SPICE']['SPICE_self']['print_freq']
+    cfg.test_freq = configs['SPICE']['SPICE_self']['test_freq']
+    cfg.eval_ent = configs['SPICE']['SPICE_self']['eval_ent']
+    cfg.eval_ent_weight = configs['SPICE']['SPICE_self']['eval_ent_weight']
+
+    # Data train
+    cfg.data_train = Dict(dict(
+        type=f'{moco_dataset_name}_emb', # "stl10_emb",
+        root_folder= pathlib.Path(configs['SPICE']['MoCo']['dataset_path']).joinpath(moco_dataset_name), # "./datasets/stl10",
+        embedding=cfg.embedding,
+        split='train', # "train+test",
+        ims_per_batch=cfg.batch_size,
+        shuffle=True,
+        aspect_ratio_grouping=False,
+        train=True,
+        show=False,
+        trans1=Dict(dict(
+            aug_type="weak",
+            crop_size=96,
+            normalize=Dict(dict(mean=[0.485, 0.456, 0.406],
+                           std=[0.229, 0.224, 0.225])),
+        )),
+
+        trans2=Dict(dict(
+            aug_type="scan",
+            crop_size=img_size_dict[moco_dataset_name],
+            normalize=Dict(dict(mean=[0.485, 0.456, 0.406],
+                           std=[0.229, 0.224, 0.225])),
+            num_strong_augs=4,
+            cutout_kwargs=Dict(dict(n_holes=1,
+                               length=32,
+                               random=True))
+        )),
+    ))
+    cfg.data_train.labels_dict = {i: lbl for i, lbl in enumerate(labels)}
+    cfg.data_train.map_df_paths = {
+        split: dataset_root.joinpath(f"{split}{'Mini' if use_mini_dataset else ''}_mapping_{ascan_per_group}scans.csv")
+        for split in ['train', 'valid', 'test']}
+
+
+    # Data test
+    cfg.data_test = Dict(dict(
+        type=f'{moco_dataset_name}_emb', # "stl10_emb",
+        root_folder=pathlib.Path(configs['SPICE']['MoCo']['dataset_path']).joinpath(
+        'OCT_lab_data' if moco_dataset_name == 'oct' else moco_dataset_name), # pathlib.Path(configs['SPICE']['MoCo']['dataset_path']).joinpath(moco_dataset_name),# "./datasets/stl10",
+        embedding=cfg.embedding,
+        split='train' , # "train+test",
+        shuffle=False,
+        ims_per_batch=50,
+        aspect_ratio_grouping=False,
+        train=False,
+        show=False,
+        trans1=Dict(dict(
+            aug_type="test",
+            normalize=Dict(dict(mean=[0.485, 0.456, 0.406],
+                           std=[0.229, 0.224, 0.225])),
+        )),
+        trans2=Dict(dict(
+            aug_type="test",
+            normalize=Dict(dict(mean=[0.485, 0.456, 0.406],
+                           std=[0.229, 0.224, 0.225])),
+        )),
+
+    ))
+    cfg.data_test.labels_dict = {i: lbl for i, lbl in enumerate(labels)}
+    cfg.data_test.map_df_paths = {
+        split: dataset_root.joinpath(f"{ascan_per_group}mscans").joinpath(
+            f"{split}{'Mini' if use_mini_dataset else ''}_mapping_{ascan_per_group}scans.csv")
+        for split in ['train', 'valid', 'test']}
+
+    # Model
+    cfg.model = Dict(dict(
+        feature=Dict(dict(
+            type=cfg.model_type,
+            num_classes=cfg.num_cluster,
+            in_channels=3,
+            in_size=img_size_dict[moco_dataset_name],
+            batchnorm_track=True,
+            test=False,
+            feature_only=True
+        )),
+
+        head=Dict(dict(type="sem_multi",
+                  multi_heads=[Dict(dict(classifier=Dict(dict(type="mlp", num_neurons=[cfg.fea_dim, cfg.fea_dim, cfg.num_cluster], last_activation="softmax")),
+                                    feature_conv=None,
+                                    num_cluster=cfg.num_cluster,
+                                    loss_weight=Dict(dict(loss_cls=1)),
+                                    iter_start=cfg.epochs,
+                                    iter_up=cfg.epochs,
+                                    iter_down=cfg.epochs,
+                                    iter_end=cfg.epochs,
+                                    ratio_start=1.0,
+                                    ratio_end=1.0,
+                                    center_ratio=cfg.center_ratio,
+                                    ))]*cfg.num_head,
+                  )),
+        model_type="moco",
+        pretrained=cfg.pre_model,
+        freeze_conv=True,
+    ))
+
+    # Solver
+    cfg.solver = Dict(dict(
+        type="adam",
+        base_lr=0.005,
+        bias_lr_factor=1,
+        weight_decay=0,
+        weight_decay_bias=0,
+        target_sub_batch_size=cfg.target_sub_batch_size,
+        batch_size=cfg.batch_size,
+        train_sub_batch_size=cfg.train_sub_batch_size,
+        num_repeat=cfg.num_repeat,
+    ))
+
+    # Results
+    cfg.results.output_dir = f"{configs['SPICE']['MoCo']['save_folder']}/{moco_dataset_name}/{cfg.model_name}"
+
+    ###################
+    # Old code
+    # args = parser.parse_args()
+    # cfg = Config.fromfile(args.config_file)
 
     os.environ["CUDA_VISIBLE_DEVICES"] = str(cfg.device_id)
 
@@ -61,9 +273,9 @@ def main():
         mkdir(output_dir)
 
     output_config_path = os.path.join(output_dir, 'config.py')
-    save_config(cfg, output_config_path)
+    # save_config(cfg, output_config_path)
 
-    cfg.all = args.all
+    # cfg.all = args.all
     if cfg.all:
         cfg.data_train.split = "train+test"
         cfg.data_train.all = True
@@ -175,7 +387,7 @@ def main_worker(gpu, ngpus_per_node, cfg):
 
     # optionally resume from a checkpoint
     if cfg.model.pretrained is not None:
-        load_model_weights(model, cfg.model.pretrained, cfg.model.model_type)
+        load_model_weights(model, cfg.model.pretrained, cfg.model.model_type, cfg.gpu)
 
     if cfg.resume:
         if os.path.isfile(cfg.resume):
@@ -467,6 +679,8 @@ def train(train_loader, model, optimizer, epoch, cfg):
 
         idx_select, gt_cluster_labels = model(feas_sim=feas_sim, scores=scores, epoch=epoch, forward_type="sim2sem")
 
+        # Move indices to cpu
+        idx_select = [idx.cpu() for idx in idx_select]
         images_trans = []
         for h in range(num_heads):
             images_trans.append(images_trans_l[idx_select[h], :, :, :])

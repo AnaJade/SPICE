@@ -1,8 +1,14 @@
 import os
 import logging
 import random
+import argparse
 import warnings
 import sys
+import pathlib
+from sys import platform
+
+import pandas as pd
+from addict import Dict
 sys.path.insert(0, './')
 
 import numpy as np
@@ -13,12 +19,25 @@ import torch.backends.cudnn as cudnn
 import torch.distributed as dist
 import torch.multiprocessing as mp
 
-from fixmatch.utils import net_builder, get_logger, count_parameters
-from fixmatch.train_utils import TBLog, get_SGD, get_cosine_schedule_with_warmup
-from fixmatch.models.fixmatch.rfixmatch_v1 import FixMatch
-from fixmatch.datasets.ssl_dataset_robust import SSL_Dataset
-from fixmatch.datasets.data_utils import get_data_loader
+from SPICE.fixmatch.utils import net_builder, get_logger, count_parameters
+from SPICE.fixmatch.train_utils import TBLog, get_SGD, get_cosine_schedule_with_warmup
+from SPICE.fixmatch.models.fixmatch.rfixmatch_v1 import FixMatch
+from SPICE.fixmatch.datasets.ssl_dataset_robust import SSL_Dataset
+from SPICE.fixmatch.datasets.data_utils import get_data_loader
 
+# Import utils
+parent_dir = pathlib.Path(__file__).resolve().parent.parent.parent
+sys.path.append(str(parent_dir))
+import utils
+from utils_data import OCTDatasetSSL
+
+# Img size and moco_dim (nb of classes) values based on the dataset
+img_size_dict = {'stl10': 96,
+                 'cifar10': 32,
+                 'cifar100': 32}
+num_cluster_dict = {'stl10': 10,
+                    'cifar10': 10,
+                    'cifar100': 100}
 
 def main(args):
     '''
@@ -177,15 +196,39 @@ def main_worker(gpu, ngpus_per_node, args):
     
     cudnn.benchmark = True
 
-
     # Construct Dataset & DataLoader
-    train_dset = SSL_Dataset(name=args.dataset, train=True, label_file=args.label_file, all=args.all, unlabeled=args.unlabeled,
-                             num_classes=args.num_classes, data_dir=args.data_dir)
-    lb_dset, ulb_dset = train_dset.get_ssl_dset(args.num_labels)
-    
-    _eval_dset = SSL_Dataset(name=args.dataset, train=False, label_file=None, all=args.all, unlabeled=False,
-                             num_classes=args.num_classes, data_dir=args.data_dir)
-    eval_dset = _eval_dset.get_dset()
+    if args.dataset == 'oct':
+        reliable_labels = np.load(args.label_file).astype(np.long)
+        reliable_labels = np.where(reliable_labels >= 0)[0] # shape: (10,)
+        # DEBUG: Resample from current map df
+        reliable_labels = pd.read_csv(args.map_df_paths['train']).groupby('label').sample(2).index.to_numpy()
+        # print(reliable_labels)
+        lb_dset = OCTDatasetSSL(root=args.data_dir, split='train', map_df_paths=args.map_df_paths, labels_dict=args.labels_dict,
+                                reliable_label_idxs=reliable_labels, return_just_reliable=True,
+                                use_strong_transform=False, strong_transforms=None, one_hot=False)
+        ulb_dset = OCTDatasetSSL(root=args.data_dir, split='train', map_df_paths=args.map_df_paths,
+                                labels_dict=args.labels_dict,
+                                reliable_label_idxs=reliable_labels, return_just_reliable=False,
+                                use_strong_transform=True, strong_transforms=None, one_hot=False)
+
+    else:
+        train_dset = SSL_Dataset(name=args.dataset, train=True, label_file=args.label_file, all=args.all, unlabeled=args.unlabeled,
+                                 num_classes=args.num_classes, data_dir=args.data_dir)
+        lb_dset, ulb_dset = train_dset.get_ssl_dset(args.num_labels)
+        # lb_dset and ulb_dset: BasicDataset
+
+    if args.dataset == 'oct':
+        eval_dset = OCTDatasetSSL(root=args.data_dir, split='valid', map_df_paths=args.map_df_paths,
+                                labels_dict=args.labels_dict,
+                                reliable_label_idxs=None, return_just_reliable=False,
+                                use_strong_transform=False, strong_transforms=None, one_hot=False)
+
+    else:
+        oct_args = None
+        _eval_dset = SSL_Dataset(name=args.dataset, train=False, label_file=None, all=args.all, unlabeled=False,
+                                 num_classes=args.num_classes, data_dir=args.data_dir, oct_args=oct_args)
+        eval_dset = _eval_dset.get_dset()
+        # eval_dset: BasicDataset
     
     loader_dict = {}
     dset_dict = {'train_lb': lb_dset, 'train_ulb': ulb_dset, 'eval': eval_dset}
@@ -212,10 +255,12 @@ def main_worker(gpu, ngpus_per_node, args):
     model.set_data_loader(loader_dict)
     
     #If args.resume, load checkpoints from args.load_path
+    """
     resume = '{}/{}/model_last.pth'.format(args.save_dir, args.save_name)
     if os.path.exists(resume):
         args.load_path = resume
-        args.resume = True
+        # args.resume = True
+    """
     if args.resume:
         model.load_model(args.load_path)
     
@@ -232,6 +277,7 @@ def main_worker(gpu, ngpus_per_node, args):
     
 
 if __name__ == "__main__":
+    """
     import argparse
     parser = argparse.ArgumentParser(description='')
     
@@ -322,4 +368,113 @@ if __name__ == "__main__":
                              'multi node data parallel training')
 
     args = parser.parse_args()
+    """
+
+    ########################################
+
+    # Set up the argument parser
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--config_path',
+                        help='Path to the config file',
+                        type=str)
+
+    args = parser.parse_args()
+
+    if args.config_path is None:
+        if platform == "linux" or platform == "linux2":
+            args.config_path = pathlib.Path('../../config.yaml')
+        elif platform == "win32":
+            args.config_path = pathlib.Path('../../config_windows.yaml')
+    config_file = pathlib.Path(args.config_path)
+    if not config_file.exists():
+        print(f'Config file not found at {args.config_path}')
+        raise SystemExit(1)
+    configs = utils.load_configs(config_file)
+    dataset_root = pathlib.Path(configs['data']['dataset_root'])
+    ds_split = configs['data']['ds_split']
+    labels = configs['data']['labels']
+    ascan_per_group = configs['data']['ascan_per_group']
+    use_mini_dataset = configs['data']['use_mini_dataset']
+    img_size_dict['oct'] = (512, ascan_per_group)
+    num_cluster_dict['oct'] = len(labels)
+
+    # Saving and loading of the model
+    moco_dataset_name = configs['SPICE']['MoCo']['dataset_name']
+    args.save_name = configs['SPICE']['semi']['model_name']
+    args.save_dir = f"{configs['SPICE']['MoCo']['save_folder']}/{moco_dataset_name}/{args.save_name}"
+    args.resume = configs['SPICE']['semi']['resume']
+    args.load_path = pathlib.Path(configs['SPICE']['MoCo']['save_folder']).joinpath(moco_dataset_name).joinpath(
+        configs['SPICE']['semi']['model_name']).joinpath('model_last.pth.tar')
+    args.overwrite = configs['SPICE']['semi']['overwrite']
+
+    # Training configuration of FixMatch
+    args.epoch = configs['SPICE']['semi']['epoch']
+    args.num_train_iter = eval(configs['SPICE']['semi']['num_train_iter'])
+    args.num_eval_iter = configs['SPICE']['semi']['num_eval_iter']
+    args.num_labels = configs['SPICE']['semi']['num_labels']
+    args.batch_size = configs['SPICE']['semi']['batch_size']
+    args.uratio = configs['SPICE']['semi']['uratio']
+    args.eval_batch_size = configs['SPICE']['semi']['eval_batch_size']
+    args.hard_label = configs['SPICE']['semi']['hard_label']
+    args.T = configs['SPICE']['semi']['T']
+    args.p_cutoff = configs['SPICE']['semi']['p_cutoff']
+    args.ema_m = configs['SPICE']['semi']['ema_m']
+    args.ulb_loss_ratio = configs['SPICE']['semi']['ulb_loss_ratio']
+
+    # Optimizer configurations
+    args.lr = configs['SPICE']['semi']['lr']
+    args.momentum = configs['SPICE']['semi']['momentum']
+    args.weight_decay = eval(configs['SPICE']['semi']['weight_decay'])
+    args.amp = configs['SPICE']['semi']['amp']
+
+    # Backbone net configurations
+    args.net = configs['SPICE']['semi']['net']
+    args.net_from_name = configs['SPICE']['semi']['net_from_name']
+    args.depth = configs['SPICE']['semi']['depth']
+    args.widen_factor = configs['SPICE']['semi']['widen_factor']
+    args.leaky_slope = configs['SPICE']['semi']['leaky_slope']
+    args.dropout = configs['SPICE']['semi']['dropout']
+
+    # Data configurations
+    args.data_dir = pathlib.Path(configs['SPICE']['MoCo']['dataset_path']).joinpath(
+        'OCT_lab_data' if moco_dataset_name == 'oct' else moco_dataset_name)
+    args.dataset = moco_dataset_name
+    args.label_file = f"{configs['SPICE']['MoCo']['save_folder']}/{moco_dataset_name}/{configs['SPICE']['local_consistency']['model_name']}/labels_reliable.npy"
+    args.all = configs['SPICE']['semi']['all']
+    args.unlabeled = configs['SPICE']['semi']['unlabeled']
+    args.train_sampler = configs['SPICE']['semi']['train_sampler']
+    args.num_classes = num_cluster_dict[moco_dataset_name]
+    args.seed = configs['training']['random_seed']
+    args.labels_dict = {i: lbl for i, lbl in enumerate(labels)}
+    args.map_df_paths = {
+        split: dataset_root.joinpath(f"{ascan_per_group}mscans").joinpath(
+            f"{split}{'Mini' if use_mini_dataset else ''}_mapping_{ascan_per_group}scans.csv")
+        for split in ['train', 'valid', 'test']}
+
+    # Multi-GPU and distributed training
+    # More info on values: https://stackoverflow.com/a/76828907
+    os.environ['MASTER_ADDR'] = 'localhost'
+    os.environ['MASTER_PORT'] = '12355'
+    os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+    args.num_workers = configs['SPICE']['MoCo']['num_workers']
+    args.world_size = configs['SPICE']['MoCo']['world_size']
+    args.rank = configs['SPICE']['MoCo']['rank']
+    args.dist_url = configs['SPICE']['MoCo']['dist_url']
+    args.dist_backend = configs['SPICE']['MoCo']['dist_backend']
+    args.gpu = None if configs['SPICE']['MoCo']['gpu_id'] == 'None' else configs['SPICE']['MoCo']['gpu_id']
+    args.multiprocessing_distributed = configs['SPICE']['MoCo']['multiprocessing_distributed']
+
+    # python ./tools/train_semi.py
+    # --unlabeled 1
+    # --num_classes 10
+    # --label_file ./results/stl10/eval/labels_reliable.npy
+    # --save_dir ./results/stl10/spice_semi
+    # --save_name semi
+    # --batch_size 64
+    # --net WideResNet_stl10
+    # --data_dir ./datasets/stl10
+    # --dataset stl10
+
+
+
     main(args)

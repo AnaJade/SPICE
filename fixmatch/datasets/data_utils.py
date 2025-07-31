@@ -6,7 +6,7 @@ from torch.utils.data.sampler import BatchSampler
 import torch.distributed as dist
 import numpy as np
 
-from fixmatch.datasets.DistributedProxySampler import DistributedProxySampler
+from SPICE.fixmatch.datasets.DistributedProxySampler import DistributedProxySampler
 
     
 def split_ssl_data(data, target, num_labels, num_classes, index=None, include_lb_to_ulb=True):
@@ -17,7 +17,7 @@ def split_ssl_data(data, target, num_labels, num_classes, index=None, include_lb
         index: If np.array of index is given, select the data[index], target[index] as labeled samples.
         include_lb_to_ulb: If True, labeled data is also included in unlabeld data
     """
-    data, target = np.array(data), np.array(target)
+    data, target = np.array(data), np.array(target) # data.shape: (113000, 96, 96, 3), target.shape: (113000,)
     lb_data, lbs, lb_idx = sample_labeled_data(data, target, num_labels, num_classes, index)
     ulb_idx = np.array(sorted(list(set(range(len(data))) - set(lb_idx)))) #unlabeled_data index of data
     if include_lb_to_ulb:

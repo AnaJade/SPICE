@@ -118,6 +118,7 @@ class STL10(CIFAR10):
 
         # doing this so that it is consistent with all other datasets
         # to return a PIL Image
+        # shape after transpose: (96, 96, 3)
         img = Image.fromarray(np.transpose(img, (1, 2, 0)))
 
         if self.transform1 is not None:
@@ -134,6 +135,8 @@ class STL10(CIFAR10):
             mean = np.array([0.485, 0.456, 0.406])
             std = np.array([0.229, 0.224, 0.225])
 
+            # img_trans1.numpy().shape: (3, 96, 96)
+            #img_trans1.numpy().transpose([1, 2, 0]).shape: (96, 96, 3)
             img_trans1 = img_trans1.numpy().transpose([1, 2, 0]) * std + mean
             # img_trans1 = img_trans1.numpy().transpose([1, 2, 0])
             # img_trans1 = (img_trans1 - img_trans1.min()) / (img_trans1.max() - img_trans1.min())
